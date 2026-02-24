@@ -1,0 +1,3 @@
+#!/bin/sh
+dir="`dirname \"$0\"`"
+exec "$dir/resize-example1.app/Contents/MacOS/resize-example1" "$@"
