@@ -278,7 +278,87 @@ void Interpolator::LinearInterpolationQuaternion(Motion * pInputMotion, Motion *
 
 void Interpolator::BezierInterpolationQuaternion(Motion * pInputMotion, Motion * pOutputMotion, int N)
 {
-  // students should implement this
+    int inputLength = pInputMotion->GetNumFrames(); // frames are indexed 0, ..., inputLength-1
+
+    int startKeyframe = 0;
+    while (startKeyframe + N + 1 < inputLength)
+    {
+        int endKeyframe = startKeyframe + N + 1;
+
+        Posture * startPosture = pInputMotion->GetPosture(startKeyframe);
+        Posture * endPosture = pInputMotion->GetPosture(endKeyframe);
+
+        // copy start and end keyframe
+        pOutputMotion->SetPosture(startKeyframe, *startPosture);
+        pOutputMotion->SetPosture(endKeyframe, *endPosture);
+
+        // Bezier control points for quaternion interpolation
+        std::vector<std::vector<Quaternion<double>>> controlPoints(MAX_BONES_IN_ASF_FILE);
+
+        for (int bone = 0; bone < MAX_BONES_IN_ASF_FILE; bone++)
+        {
+            // Only compute control points if we have a previous keyframe
+            if (startKeyframe - N - 1 >= 0)
+            {
+                Quaternion<double> prevQ, currQ, nextQ;
+                Euler2Quaternion(pInputMotion->GetPosture(startKeyframe - N - 1)->bone_rotation[bone].p, prevQ);
+                Euler2Quaternion(pInputMotion->GetPosture(startKeyframe)->bone_rotation[bone].p, currQ);
+                Euler2Quaternion(pInputMotion->GetPosture(endKeyframe)->bone_rotation[bone].p, nextQ);
+
+                Quaternion<double> qSubSub = Slerp(2.0, prevQ, currQ);
+                Quaternion<double> qSub = Slerp(0.5, qSubSub, nextQ);
+
+                Quaternion<double> a = Slerp(1.0/3.0, currQ, qSub);
+                Quaternion<double> b = Slerp(-1.0/3.0, currQ, qSub);
+
+                controlPoints[bone].push_back(a);
+                controlPoints[bone].push_back(b);
+            }
+        }
+
+        // Interpolate frames between keyframes
+        for(int frame=1; frame<=N; frame++)
+        {
+            double t = 1.0 * frame / (N+1);
+            Posture interpolatedPosture;
+
+            // interpolate root position
+            interpolatedPosture.root_pos = startPosture->root_pos * (1-t) + endPosture->root_pos * t;
+
+            // interpolate bone rotations
+            for (int bone = 0; bone < MAX_BONES_IN_ASF_FILE; bone++)
+            {
+                if (startKeyframe - N - 1 >= 0 && !controlPoints[bone].empty())
+                {
+                    // Use Bezier interpolation with computed control points
+                    Quaternion<double> p0, p1, p2, p3;
+                    Euler2Quaternion(pInputMotion->GetPosture(startKeyframe - N - 1)->bone_rotation[bone].p, p0);
+                    Euler2Quaternion(pInputMotion->GetPosture(endKeyframe)->bone_rotation[bone].p, p3);
+                    p1 = controlPoints[bone][0];
+                    p2 = controlPoints[bone][1];
+
+                    Quaternion<double> interpolatedQ = DeCasteljauQuaternion(t, p0, p1, p2, p3);
+                    Quaternion2Euler(interpolatedQ, interpolatedPosture.bone_rotation[bone].p);
+                }
+                else
+                {
+                    // Fallback: simple SLERP interpolation between start and end
+                    Quaternion<double> qStart, qEnd, qResult;
+                    Euler2Quaternion(startPosture->bone_rotation[bone].p, qStart);
+                    Euler2Quaternion(endPosture->bone_rotation[bone].p, qEnd);
+                    qResult = Slerp(t, qStart, qEnd);
+                    Quaternion2Euler(qResult, interpolatedPosture.bone_rotation[bone].p);
+                }
+            }
+
+            pOutputMotion->SetPosture(startKeyframe + frame, interpolatedPosture);
+        }
+
+        startKeyframe = endKeyframe;
+    }
+
+    for(int frame=startKeyframe+1; frame<inputLength; frame++)
+        pOutputMotion->SetPosture(frame, *(pInputMotion->GetPosture(frame)));
 }
 
 void Interpolator::Euler2Quaternion(double angles[3], Quaternion<double> & q) 
@@ -375,6 +455,14 @@ Quaternion<double> Interpolator::DeCasteljauQuaternion(double t, Quaternion<doub
 {
   // students should implement this
   Quaternion<double> result;
+  Quaternion<double> Q0,Q1,Q2,R0,R1;
+
+  Q0 = Slerp(t, p0,p1);
+  Q1 = Slerp(t, p1,p2);
+  Q2 = Slerp(t, p2,p3);
+  R0 = Slerp(t, Q0,Q1);
+  R1 = Slerp(t, Q1,Q2);
+  result = Slerp(t, R0, R1);
   return result;
 }
 
