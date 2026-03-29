@@ -46,10 +46,9 @@ class vector
   // member functions
 public:
   // constructors
-  vector() {}
-  vector( double x, double y, double z ) { p[0]=x; p[1]=y; p[2]=z; }
-  vector( double a[3] ) { p[0]=a[0]; p[1]=a[1]; p[2]=a[2]; }
-  ~vector() {};
+  constexpr vector() {}
+  constexpr vector( double x, double y, double z ) { p[0]=x; p[1]=y; p[2]=z; }
+  constexpr vector( double a[3] ) { p[0]=a[0]; p[1]=a[1]; p[2]=a[2]; }
 
   // inquiry functions
   double& operator[](int i) { return p[i];}

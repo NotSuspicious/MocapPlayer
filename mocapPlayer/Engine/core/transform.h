@@ -10,10 +10,16 @@ Revision 3 - Jernej Barbic and Yili Zhao, Feb, 2012
 #ifndef _TRANSFORM_H
 #define _TRANSFORM_H
 
+#include "vector.h"
 class Matrix
 {
 
 };
+
+static constexpr vector XAXIS {1,0,0};
+static constexpr vector YAXIS {0,1,0};
+static constexpr vector ZAXIS {0,0,1};
+
 
 void matrix_transpose(double a[4][4], double b[4][4]);
 void matrix_print(char *str, double a[4][4]);
