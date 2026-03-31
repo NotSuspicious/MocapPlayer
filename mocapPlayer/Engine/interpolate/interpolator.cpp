@@ -22,11 +22,109 @@ Interpolator::~Interpolator()
 {
 }
 
+double Interpolator::GetAverageJerk(Motion* motionA, Motion* motionB, int startIndex) {
+    // Jerk is the rate of change of acceleration
+    // jerk = (a2 - a1) / dt, where a = (v2 - v1) / dt
+    // For frame-based animation with dt = 1 frame:
+    // jerk = (pos[i+2] - 2*pos[i+1] + pos[i]) - (pos[i+1] - 2*pos[i] + pos[i-1])
+
+    // Assume 120 fps for real-time conversion
+    const double FPS = 120.0;
+    const double dt = 1.0 / FPS;  // time step in seconds
+    // For jerk: jerk_physical = jerk_frame / dt^3
+    // Since we compute jerk in frame units (dt=1), we need to divide by dt^3 to get physical units
+    const double dt3 = dt * dt * dt;  // dt^3 for jerk scaling (very small: ~5.787e-7)
+
+    double totalJerk = 0.0;
+    int jerkCount = 0;
+
+    // Need at least 4 frames to compute jerk (frame i-1, i, i+1, i+2)
+    int maxFrames = std::min(motionA->GetNumFrames(), motionB->GetNumFrames());
+
+    for (int frame = startIndex + 1; frame < maxFrames - 2; frame++) {
+        for (int bone = 0; bone < MAX_BONES_IN_ASF_FILE; bone++) {
+            // Get 4 consecutive frames from both motions
+            vector a0 = motionA->GetPosture(frame - 1)->bone_rotation[bone];
+            vector a1 = motionA->GetPosture(frame)->bone_rotation[bone];
+            vector a2 = motionA->GetPosture(frame + 1)->bone_rotation[bone];
+            vector a3 = motionA->GetPosture(frame + 2)->bone_rotation[bone];
+
+            vector b0 = motionB->GetPosture(frame - 1)->bone_rotation[bone];
+            vector b1 = motionB->GetPosture(frame)->bone_rotation[bone];
+            vector b2 = motionB->GetPosture(frame + 1)->bone_rotation[bone];
+            vector b3 = motionB->GetPosture(frame + 2)->bone_rotation[bone];
+
+            // Compute acceleration at frame i: a[i] = (pos[i+1] - 2*pos[i] + pos[i-1])
+            vector aAcc_i = (a2 - a1 * 2.0 + a0);
+            vector aAcc_i1 = (a3 - a2 * 2.0 + a1);
+
+            vector bAcc_i = (b2 - b1 * 2.0 + b0);
+            vector bAcc_i1 = (b3 - b2 * 2.0 + b1);
+
+            // Jerk = change in acceleration
+            vector aJerk = aAcc_i1 - aAcc_i;
+            vector bJerk = bAcc_i1 - bAcc_i;
+
+            // Difference in jerk between motions
+            vector jerkDiff = bJerk - aJerk;
+
+            // Accumulate magnitude of jerk difference
+            // Divide by dt^3 to convert from frame units to physical units (degrees/second^3)
+            totalJerk += jerkDiff.length() / dt3;
+            jerkCount++;
+        }
+    }
+
+    if (jerkCount == 0) {
+        return 0.0;
+    }
+
+    return totalJerk / jerkCount;
+}
+
 //Create interpolated motion
 void Interpolator::Interpolate(Motion * pInputMotion, Motion ** pOutputMotion, int N) 
 {
   //Allocate new motion
   *pOutputMotion = new Motion(pInputMotion->GetNumFrames(), pInputMotion->GetSkeleton()); 
+
+  // Sample input motion for comparison
+  FILE* INPUT_LFEMUR = fopen("INPUT_LFEMUR.txt", "w");
+  FILE* INPUT_ROOT = fopen("INPUT_ROOT.txt", "w");
+
+  if (!INPUT_LFEMUR || !INPUT_ROOT) {
+    printf("Warning: Could not open input sampling files\n");
+  }
+
+  // Sample frames 600-800 for LFEMUR
+  if (INPUT_LFEMUR) {
+    for (int frame = 600; frame <= 800; frame++) {
+      if (frame < pInputMotion->GetNumFrames()) {
+        Posture* posture = pInputMotion->GetPosture(frame);
+        double yAxis = posture->bone_rotation[Posture::LFEMUR_INDEX].x();
+        double xAxis = frame;
+        fprintf(INPUT_LFEMUR, "%f,%f\n", xAxis, yAxis);
+      }
+    }
+    fflush(INPUT_LFEMUR);
+    fclose(INPUT_LFEMUR);
+    printf("Input LFEMUR data written to INPUT_LFEMUR.txt (frames 600-800)\n");
+  }
+
+  // Sample frames 200-500 for ROOT
+  if (INPUT_ROOT) {
+    for (int frame = 200; frame <= 500; frame++) {
+      if (frame < pInputMotion->GetNumFrames()) {
+        Posture* posture = pInputMotion->GetPosture(frame);
+        double yAxis = posture->bone_rotation[Posture::ROOT_INDEX].z();
+        double xAxis = frame;
+        fprintf(INPUT_ROOT, "%f,%f\n", xAxis, yAxis);
+      }
+    }
+    fflush(INPUT_ROOT);
+    fclose(INPUT_ROOT);
+    printf("Input ROOT data written to INPUT_ROOT.txt (frames 200-500)\n");
+  }
 
   //Perform the interpolation
   if ((m_InterpolationType == LINEAR) && (m_AngleRepresentation == EULER))
@@ -42,11 +140,22 @@ void Interpolator::Interpolate(Motion * pInputMotion, Motion ** pOutputMotion, i
     printf("Error: unknown interpolation / angle representation type.\n");
     exit(1);
   }
+
 }
 
 void Interpolator::LinearInterpolationEuler(Motion * pInputMotion, Motion * pOutputMotion, int N)
 {
+  auto startTime = std::chrono::high_resolution_clock::now();
+
   int inputLength = pInputMotion->GetNumFrames(); // frames are indexed 0, ..., inputLength-1
+
+  // Open files for logging
+  FILE* LELFEMUR = fopen("LELFEMUR.txt", "w");
+  FILE* LEROOT = fopen("LEROOT.txt", "w");
+
+  if (!LELFEMUR || !LEROOT) {
+    printf("Warning: Could not open LinearInterpolationEuler output files\n");
+  }
 
   int startKeyframe = 0;
   while (startKeyframe + N + 1 < inputLength)
@@ -63,6 +172,7 @@ void Interpolator::LinearInterpolationEuler(Motion * pInputMotion, Motion * pOut
     // interpolate in between
     for(int frame=1; frame<=N; frame++)
     {
+      int currentKeyframe = startKeyframe + frame;
       Posture interpolatedPosture;
       double t = 1.0 * frame / (N+1);
 
@@ -73,9 +183,52 @@ void Interpolator::LinearInterpolationEuler(Motion * pInputMotion, Motion * pOut
       for (int bone = 0; bone < MAX_BONES_IN_ASF_FILE; bone++){
         interpolatedPosture.bone_rotation[bone] = startPosture->bone_rotation[bone] * (1-t) + endPosture->bone_rotation[bone] * t;
 
+        // Log LFEMUR frames 600-800
+        if (currentKeyframe >= 600 && currentKeyframe <= 800){
+          if (bone == Posture::LFEMUR_INDEX){
+            double yAxis = interpolatedPosture.bone_rotation[bone].x();
+            double xAxis = currentKeyframe;
+            fprintf(LELFEMUR, "%f,%f\n", xAxis, yAxis);
+            fflush(LELFEMUR);
+          }
+        }
+
+        // Log ROOT frames 200-500
+        if (currentKeyframe >= 200 && currentKeyframe <= 500){
+          if (bone == Posture::ROOT_INDEX){
+            double yAxis = interpolatedPosture.bone_rotation[bone].z();
+            double xAxis = currentKeyframe;
+            fprintf(LEROOT, "%f,%f\n", xAxis, yAxis);
+            fflush(LEROOT);
+          }
+        }
       }
 
       pOutputMotion->SetPosture(startKeyframe + frame, interpolatedPosture);
+    }
+
+    // Log the endKeyframe (keyframe data)
+    for (int bone = 0; bone < MAX_BONES_IN_ASF_FILE; bone++)
+    {
+      // Log LFEMUR frames 600-800
+      if (endKeyframe >= 600 && endKeyframe <= 800){
+        if (bone == Posture::LFEMUR_INDEX){
+          double yAxis = endPosture->bone_rotation[bone].x();
+          double xAxis = endKeyframe;
+          fprintf(LELFEMUR, "%f,%f\n", xAxis, yAxis);
+          fflush(LELFEMUR);
+        }
+      }
+
+      // Log ROOT frames 200-500
+      if (endKeyframe >= 200 && endKeyframe <= 500){
+        if (bone == Posture::ROOT_INDEX){
+          double yAxis = endPosture->bone_rotation[bone].z();
+          double xAxis = endKeyframe;
+          fprintf(LEROOT, "%f,%f\n", xAxis, yAxis);
+          fflush(LEROOT);
+        }
+      }
     }
 
     startKeyframe = endKeyframe;
@@ -83,6 +236,23 @@ void Interpolator::LinearInterpolationEuler(Motion * pInputMotion, Motion * pOut
 
   for(int frame=startKeyframe+1; frame<inputLength; frame++)
     pOutputMotion->SetPosture(frame, *(pInputMotion->GetPosture(frame)));
+
+  // Close files with proper flushing
+  if (LELFEMUR) {
+    fflush(LELFEMUR);
+    fclose(LELFEMUR);
+    printf("LFEMUR data written to LELFEMUR.txt\n");
+  }
+  if (LEROOT) {
+    fflush(LEROOT);
+    fclose(LEROOT);
+    printf("ROOT data written to LEROOT.txt\n");
+  }
+
+  auto endTime = std::chrono::high_resolution_clock::now();
+  std::chrono::duration<double> elapsed = endTime - startTime;
+  m_linearEulerTime = elapsed.count();
+  printf("LinearInterpolationEuler completed in %.6f seconds\n", m_linearEulerTime);
 }
 
 void Interpolator::Rotation2Euler(double R[9], double angles[3])
@@ -134,7 +304,17 @@ void Interpolator::Euler2Rotation(double angles[3], double R[9])
 
 void Interpolator::BezierInterpolationEuler(Motion * pInputMotion, Motion * pOutputMotion, int N)
 {
+    auto startTime = std::chrono::high_resolution_clock::now();
+
     int inputLength = pInputMotion->GetNumFrames(); // frames are indexed 0, ..., inputLength-1
+
+    // Open files for logging
+    FILE* BEELFEMUR = fopen("BEELFEMUR.txt", "w");
+    FILE* BEEROOT = fopen("BEEROOT.txt", "w");
+
+    if (!BEELFEMUR || !BEEROOT) {
+      printf("Warning: Could not open BezierInterpolationEuler output files\n");
+    }
 
     int startKeyframe = 0;
     while (startKeyframe + N + 1 < inputLength)
@@ -196,6 +376,7 @@ void Interpolator::BezierInterpolationEuler(Motion * pInputMotion, Motion * pOut
         // interpolate in between
         for(int frame=1; frame<=N; frame++)
         {
+            int currentKeyframe = startKeyframe + frame;
             Posture interpolatedPosture;
             double t = 1.0 * frame / (N+1);
 
@@ -220,9 +401,53 @@ void Interpolator::BezierInterpolationEuler(Motion * pInputMotion, Motion * pOut
                     }
                 }
                 interpolatedPosture.bone_rotation[bone] = boneRot;
+
+                // Log LFEMUR frames 600-800
+                if (currentKeyframe >= 600 && currentKeyframe <= 800){
+                  if (bone == Posture::LFEMUR_INDEX){
+                    double yAxis = interpolatedPosture.bone_rotation[bone].x();
+                    double xAxis = currentKeyframe;
+                    fprintf(BEELFEMUR, "%f,%f\n", xAxis, yAxis);
+                    fflush(BEELFEMUR);
+                  }
+                }
+
+                // Log ROOT frames 200-500
+                if (currentKeyframe >= 200 && currentKeyframe <= 500){
+                  if (bone == Posture::ROOT_INDEX){
+                    double yAxis = interpolatedPosture.bone_rotation[bone].z();
+                    double xAxis = currentKeyframe;
+                    fprintf(BEEROOT, "%f,%f\n", xAxis, yAxis);
+                    fflush(BEEROOT);
+                  }
+                }
             }
 
             pOutputMotion->SetPosture(startKeyframe + frame, interpolatedPosture);
+        }
+
+        // Log the endKeyframe (keyframe data)
+        for (int bone = 0; bone < MAX_BONES_IN_ASF_FILE; bone++)
+        {
+          // Log LFEMUR frames 600-800
+          if (endKeyframe >= 600 && endKeyframe <= 800){
+            if (bone == Posture::LFEMUR_INDEX){
+              double yAxis = endPosture->bone_rotation[bone].x();
+              double xAxis = endKeyframe;
+              fprintf(BEELFEMUR, "%f,%f\n", xAxis, yAxis);
+              fflush(BEELFEMUR);
+            }
+          }
+
+          // Log ROOT frames 200-500
+          if (endKeyframe >= 200 && endKeyframe <= 500){
+            if (bone == Posture::ROOT_INDEX){
+              double yAxis = endPosture->bone_rotation[bone].z();
+              double xAxis = endKeyframe;
+              fprintf(BEEROOT, "%f,%f\n", xAxis, yAxis);
+              fflush(BEEROOT);
+            }
+          }
         }
 
         startKeyframe = endKeyframe;
@@ -230,11 +455,38 @@ void Interpolator::BezierInterpolationEuler(Motion * pInputMotion, Motion * pOut
 
     for(int frame=startKeyframe+1; frame<inputLength; frame++)
         pOutputMotion->SetPosture(frame, *(pInputMotion->GetPosture(frame)));
+
+    // Close files with proper flushing
+    if (BEELFEMUR) {
+      fflush(BEELFEMUR);
+      fclose(BEELFEMUR);
+      printf("LFEMUR data written to BEELFEMUR.txt\n");
+    }
+    if (BEEROOT) {
+      fflush(BEEROOT);
+      fclose(BEEROOT);
+      printf("ROOT data written to BEEROOT.txt\n");
+    }
+
+    auto endTime = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> elapsed = endTime - startTime;
+    m_bezierEulerTime = elapsed.count();
+    printf("BezierInterpolationEuler completed in %.6f seconds\n", m_bezierEulerTime);
 }
 
 void Interpolator::LinearInterpolationQuaternion(Motion * pInputMotion, Motion * pOutputMotion, int N)
 {
+    auto startTime = std::chrono::high_resolution_clock::now();
+
     int inputLength = pInputMotion->GetNumFrames(); // frames are indexed 0, ..., inputLength-1
+
+    // Open files for logging
+    FILE* LIQLFEMUR = fopen("LIQLFEMUR.txt", "w");
+    FILE* LIQROOT = fopen("LIQROOT.txt", "w");
+
+    if (!LIQLFEMUR || !LIQROOT) {
+      printf("Warning: Could not open LinearInterpolationQuaternion output files\n");
+    }
 
     int startKeyframe = 0;
     while (startKeyframe + N + 1 < inputLength)
@@ -251,6 +503,7 @@ void Interpolator::LinearInterpolationQuaternion(Motion * pInputMotion, Motion *
         // interpolate in between
         for(int frame=1; frame<=N; frame++)
         {
+            int currentKeyframe = startKeyframe + frame;
             Posture interpolatedPosture;
             double t = 1.0 * frame / (N+1);
 
@@ -264,9 +517,53 @@ void Interpolator::LinearInterpolationQuaternion(Motion * pInputMotion, Motion *
                 Euler2Quaternion(endPosture->bone_rotation[bone].p, b);
                 q = Slerp(t, a, b);
                 Quaternion2Euler(q, interpolatedPosture.bone_rotation[bone].p);
+
+                // Log LFEMUR frames 600-800
+                if (currentKeyframe >= 600 && currentKeyframe <= 800){
+                  if (bone == Posture::LFEMUR_INDEX){
+                    double yAxis = interpolatedPosture.bone_rotation[bone].x();
+                    double xAxis = currentKeyframe;
+                    fprintf(LIQLFEMUR, "%f,%f\n", xAxis, yAxis);
+                    fflush(LIQLFEMUR);
+                  }
+                }
+
+                // Log ROOT frames 200-500
+                if (currentKeyframe >= 200 && currentKeyframe <= 500){
+                  if (bone == Posture::ROOT_INDEX){
+                    double yAxis = interpolatedPosture.bone_rotation[bone].z();
+                    double xAxis = currentKeyframe;
+                    fprintf(LIQROOT, "%f,%f\n", xAxis, yAxis);
+                    fflush(LIQROOT);
+                  }
+                }
             }
 
             pOutputMotion->SetPosture(startKeyframe + frame, interpolatedPosture);
+        }
+
+        // Log the endKeyframe (keyframe data)
+        for (int bone = 0; bone < MAX_BONES_IN_ASF_FILE; bone++)
+        {
+          // Log LFEMUR frames 600-800
+          if (endKeyframe >= 600 && endKeyframe <= 800){
+            if (bone == Posture::LFEMUR_INDEX){
+              double yAxis = endPosture->bone_rotation[bone].x();
+              double xAxis = endKeyframe;
+              fprintf(LIQLFEMUR, "%f,%f\n", xAxis, yAxis);
+              fflush(LIQLFEMUR);
+            }
+          }
+
+          // Log ROOT frames 200-500
+          if (endKeyframe >= 200 && endKeyframe <= 500){
+            if (bone == Posture::ROOT_INDEX){
+              double yAxis = endPosture->bone_rotation[bone].z();
+              double xAxis = endKeyframe;
+              fprintf(LIQROOT, "%f,%f\n", xAxis, yAxis);
+              fflush(LIQROOT);
+            }
+          }
         }
 
         startKeyframe = endKeyframe;
@@ -274,11 +571,38 @@ void Interpolator::LinearInterpolationQuaternion(Motion * pInputMotion, Motion *
 
     for(int frame=startKeyframe+1; frame<inputLength; frame++)
         pOutputMotion->SetPosture(frame, *(pInputMotion->GetPosture(frame)));
+
+    // Close files with proper flushing
+    if (LIQLFEMUR) {
+      fflush(LIQLFEMUR);
+      fclose(LIQLFEMUR);
+      printf("LFEMUR data written to LIQLFEMUR.txt\n");
+    }
+    if (LIQROOT) {
+      fflush(LIQROOT);
+      fclose(LIQROOT);
+      printf("ROOT data written to LIQROOT.txt\n");
+    }
+
+    auto endTime = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> elapsed = endTime - startTime;
+    m_linearQuaternionTime = elapsed.count();
+    printf("LinearInterpolationQuaternion completed in %.6f seconds\n", m_linearQuaternionTime);
 }
 
 void Interpolator::BezierInterpolationQuaternion(Motion * pInputMotion, Motion * pOutputMotion, int N)
 {
+    auto startTime = std::chrono::high_resolution_clock::now();
+
     int inputLength = pInputMotion->GetNumFrames(); // frames are indexed 0, ..., inputLength-1
+
+    // Open file for logging bone rotation data
+    FILE* BQLFEMUR = fopen("BQLFEMUR.txt", "w");
+    FILE* BQROOT = fopen("BQROOT.txt", "w");
+
+    if (!BQLFEMUR || !BQROOT) {
+        printf("Warning: Could not open bone_rotations.txt for writing\n");
+    }
 
     int startKeyframe = 0;
     while (startKeyframe + N + 1 < inputLength)
@@ -297,28 +621,83 @@ void Interpolator::BezierInterpolationQuaternion(Motion * pInputMotion, Motion *
 
         for (int bone = 0; bone < MAX_BONES_IN_ASF_FILE; bone++)
         {
-            // Only compute control points if we have a previous keyframe
-            if (startKeyframe - N - 1 >= 0)
+            Quaternion<double> qCurrent, qNext;
+            Euler2Quaternion(startPosture->bone_rotation[bone].p, qCurrent);
+            Euler2Quaternion(endPosture->bone_rotation[bone].p, qNext);
+
+            Quaternion<double> p1, p2;
+
+            // Check if we have both previous and next keyframes for proper tangent computation
+            bool hasPrev = (startKeyframe >= N + 1);
+            bool hasNext = (endKeyframe + N + 1 < inputLength);
+
+            if (hasPrev && hasNext)
             {
-                Quaternion<double> prevQ, currQ, nextQ;
-                Euler2Quaternion(pInputMotion->GetPosture(startKeyframe - N - 1)->bone_rotation[bone].p, prevQ);
-                Euler2Quaternion(pInputMotion->GetPosture(startKeyframe)->bone_rotation[bone].p, currQ);
-                Euler2Quaternion(pInputMotion->GetPosture(endKeyframe)->bone_rotation[bone].p, nextQ);
+                // We have qn-1, qn, qn+1, qn+2 - compute with full tangent info
+                Quaternion<double> qPrevKeyframe;
+                Quaternion<double> qNextKeyframe;
 
-                Quaternion<double> qSubSub = Slerp(2.0, prevQ, currQ);
-                Quaternion<double> qSub = Slerp(0.5, qSubSub, nextQ);
+                Euler2Quaternion(pInputMotion->GetPosture(startKeyframe - (N+1))->bone_rotation[bone].p, qPrevKeyframe);
+                Euler2Quaternion(pInputMotion->GetPosture(endKeyframe + (N+1))->bone_rotation[bone].p, qNextKeyframe);
 
-                Quaternion<double> a = Slerp(1.0/3.0, currQ, qSub);
-                Quaternion<double> b = Slerp(-1.0/3.0, currQ, qSub);
+                // Lecture formula for an (tangent at qn):
+                // an = Slerp(Slerp(qn-1, qn, 2.0), qn+1, 0.5)
+                Quaternion<double> temp_n = Slerp(2.0, qPrevKeyframe, qCurrent);
+                Quaternion<double> an = Slerp(0.5, temp_n, qNext);
 
-                controlPoints[bone].push_back(a);
-                controlPoints[bone].push_back(b);
+                // Lecture formula for bn (tangent at qn+1):
+                // bn = Slerp(Slerp(qn, qn+1, 2.0), qn+2, 0.5)
+                Quaternion<double> temp_n1 = Slerp(2.0, qCurrent, qNext);
+                Quaternion<double> bn = Slerp(0.5, temp_n1, qNextKeyframe);
+
+                // Control points:
+                // p1 = Slerp(qn, an, 1.0/3.0)
+                // p2 = Slerp(qn+1, bn, -1.0/3.0)
+                p1 = Slerp(1.0/3.0, qCurrent, an);
+                p2 = Slerp(-1.0/3.0, qNext, bn);
             }
+            else if (hasPrev)
+            {
+                // Have previous but not next: use qPrev and qCurrent to estimate tangent
+                Quaternion<double> qPrevKeyframe;
+                Euler2Quaternion(pInputMotion->GetPosture(startKeyframe - (N+1))->bone_rotation[bone].p, qPrevKeyframe);
+
+                // Estimate tangent at qCurrent from previous segment
+                Quaternion<double> temp = Slerp(2.0, qPrevKeyframe, qCurrent);
+                Quaternion<double> an = Slerp(0.5, temp, qNext);
+
+                // Use linear fallback for qNext tangent
+                p1 = Slerp(1.0/3.0, qCurrent, an);
+                p2 = Slerp(2.0/3.0, qCurrent, qNext);
+            }
+            else if (hasNext)
+            {
+                // Have next but not previous: use qCurrent and qNext to estimate tangent
+                Quaternion<double> qNextKeyframe;
+                Euler2Quaternion(pInputMotion->GetPosture(endKeyframe + (N+1))->bone_rotation[bone].p, qNextKeyframe);
+
+                // Use linear fallback for qCurrent tangent
+                Quaternion<double> bn = Slerp(0.5, Slerp(2.0, qCurrent, qNext), qNextKeyframe);
+
+                p1 = Slerp(1.0/3.0, qCurrent, qNext);
+                p2 = Slerp(-1.0/3.0, qNext, bn);
+            }
+            else
+            {
+                // At start/end of motion, use simple linear interpolation for control points
+                p1 = Slerp(1.0/3.0, qCurrent, qNext);
+                p2 = Slerp(2.0/3.0, qCurrent, qNext);
+            }
+
+            controlPoints[bone].push_back(p1);
+            controlPoints[bone].push_back(p2);
         }
 
         // Interpolate frames between keyframes
         for(int frame=1; frame<=N; frame++)
         {
+            int currentKeyframe = startKeyframe+frame;
+
             double t = 1.0 * frame / (N+1);
             Posture interpolatedPosture;
 
@@ -328,30 +707,63 @@ void Interpolator::BezierInterpolationQuaternion(Motion * pInputMotion, Motion *
             // interpolate bone rotations
             for (int bone = 0; bone < MAX_BONES_IN_ASF_FILE; bone++)
             {
-                if (startKeyframe - N - 1 >= 0 && !controlPoints[bone].empty())
-                {
-                    // Use Bezier interpolation with computed control points
-                    Quaternion<double> p0, p1, p2, p3;
-                    Euler2Quaternion(pInputMotion->GetPosture(startKeyframe - N - 1)->bone_rotation[bone].p, p0);
-                    Euler2Quaternion(pInputMotion->GetPosture(endKeyframe)->bone_rotation[bone].p, p3);
-                    p1 = controlPoints[bone][0];
-                    p2 = controlPoints[bone][1];
+                // Use Bezier interpolation with computed control points
+                Quaternion<double> p0, p1, p2, p3;
+                Euler2Quaternion(startPosture->bone_rotation[bone].p, p0);
+                Euler2Quaternion(endPosture->bone_rotation[bone].p, p3);
+                p1 = controlPoints[bone][0];
+                p2 = controlPoints[bone][1];
 
-                    Quaternion<double> interpolatedQ = DeCasteljauQuaternion(t, p0, p1, p2, p3);
-                    Quaternion2Euler(interpolatedQ, interpolatedPosture.bone_rotation[bone].p);
+                // Apply De Casteljau algorithm
+                Quaternion<double> interpolatedQ = DeCasteljauQuaternion(t, p0, p1, p2, p3);
+                Quaternion2Euler(interpolatedQ, interpolatedPosture.bone_rotation[bone].p);
+
+                //Plot lfemur - frames 600-800
+                if (currentKeyframe >= 600 && currentKeyframe <= 800){
+                    if (bone == Posture::LFEMUR_INDEX){
+                        double yAxis = interpolatedPosture.bone_rotation[bone].x();
+                        double xAxis = currentKeyframe;
+                        fprintf(BQLFEMUR, "%f,%f\n", xAxis, yAxis);
+                        fflush(BQLFEMUR);
+                    }
                 }
-                else
-                {
-                    // Fallback: simple SLERP interpolation between start and end
-                    Quaternion<double> qStart, qEnd, qResult;
-                    Euler2Quaternion(startPosture->bone_rotation[bone].p, qStart);
-                    Euler2Quaternion(endPosture->bone_rotation[bone].p, qEnd);
-                    qResult = Slerp(t, qStart, qEnd);
-                    Quaternion2Euler(qResult, interpolatedPosture.bone_rotation[bone].p);
+
+                //Plot root - frames 200-500
+                if (currentKeyframe >= 200 && currentKeyframe <= 500){
+                    if (bone == Posture::ROOT_INDEX){
+                        double yAxis = interpolatedPosture.bone_rotation[bone].z();
+                        double xAxis = currentKeyframe;
+                        fprintf(BQROOT, "%f,%f\n", xAxis, yAxis);
+                        fflush(BQROOT);
+                    }
                 }
             }
 
             pOutputMotion->SetPosture(startKeyframe + frame, interpolatedPosture);
+        }
+
+        // Log the endKeyframe (keyframe data)
+        for (int bone = 0; bone < MAX_BONES_IN_ASF_FILE; bone++)
+        {
+          // Log LFEMUR frames 600-800
+          if (endKeyframe >= 600 && endKeyframe <= 800){
+            if (bone == Posture::LFEMUR_INDEX){
+              double yAxis = endPosture->bone_rotation[bone].x();
+              double xAxis = endKeyframe;
+              fprintf(BQLFEMUR, "%f,%f\n", xAxis, yAxis);
+              fflush(BQLFEMUR);
+            }
+          }
+
+          // Log ROOT frames 200-500
+          if (endKeyframe >= 200 && endKeyframe <= 500){
+            if (bone == Posture::ROOT_INDEX){
+              double yAxis = endPosture->bone_rotation[bone].z();
+              double xAxis = endKeyframe;
+              fprintf(BQROOT, "%f,%f\n", xAxis, yAxis);
+              fflush(BQROOT);
+            }
+          }
         }
 
         startKeyframe = endKeyframe;
@@ -359,6 +771,23 @@ void Interpolator::BezierInterpolationQuaternion(Motion * pInputMotion, Motion *
 
     for(int frame=startKeyframe+1; frame<inputLength; frame++)
         pOutputMotion->SetPosture(frame, *(pInputMotion->GetPosture(frame)));
+
+    // Close files with proper flushing
+    if (BQLFEMUR) {
+        fflush(BQLFEMUR);
+        fclose(BQLFEMUR);
+        printf("LFEMUR data written to BQLFEMUR.txt\n");
+    }
+    if (BQROOT) {
+        fflush(BQROOT);
+        fclose(BQROOT);
+        printf("ROOT data written to BQROOT.txt\n");
+    }
+
+    auto endTime = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> elapsed = endTime - startTime;
+    m_bezierQuaternionTime = elapsed.count();
+    printf("BezierInterpolationQuaternion completed in %.6f seconds\n", m_bezierQuaternionTime);
 }
 
 void Interpolator::Euler2Quaternion(double angles[3], Quaternion<double> & q) 
@@ -376,7 +805,7 @@ void Interpolator::Quaternion2Euler(Quaternion<double> & q, double angles[3])
     Rotation2Euler(R, angles);
 }
 
-Quaternion<double> Interpolator::Slerp(double t, Quaternion<double> & qStart, Quaternion<double> & qEnd_)
+Quaternion<double> Interpolator::Slerp(double t, const Quaternion<double> & qStart, const Quaternion<double> & qEnd_)
 {
   // Spherical Linear Interpolation between two quaternions
   Quaternion<double> result;
@@ -421,7 +850,7 @@ Quaternion<double> Interpolator::Slerp(double t, Quaternion<double> & qStart, Qu
       z0 * (1.0 - t) + z1 * t
     );
   } else {
-    // Calculate interpolation coefficients
+    // Calculate interpolation coefficients (works for any t, including t > 1 and t < 0)
     double coeff1 = sin((1.0 - t) * theta) / sinTheta;
     double coeff2 = sin(t * theta) / sinTheta;
 

@@ -13,6 +13,9 @@ Revision 3 - Jernej Barbic and Yili Zhao, Feb, 2012
 struct Posture
 {
 public:
+    static const int LFEMUR_INDEX = 25;
+    static const int ROOT_INDEX = 0;
+public:
   //Root position (x, y, z)		
   vector root_pos;								
 

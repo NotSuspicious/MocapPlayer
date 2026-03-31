@@ -13,6 +13,7 @@
 
 #include "motion.h"
 #include "quaternion.h"
+#include <chrono>
 
 enum InterpolationType
 {
@@ -33,10 +34,12 @@ public:
             -3, 3, 0, 0,
             1, 0, 0, 0
     };
+    const static int FPS = 120;
   //constructor, destructor
   Interpolator();
   ~Interpolator();
 
+    double GetAverageJerk(Motion* motionA, Motion* motionB, int startIndex);
   //Set interpolation type
   void SetInterpolationType(InterpolationType interpolationType) {m_InterpolationType = interpolationType;};
   //Set angle representation for interpolation
@@ -45,9 +48,21 @@ public:
   //Create interpolated motion and store it into pOutputMotion (which will also be allocated)
   void Interpolate(Motion * pInputMotion, Motion ** pOutputMotion, int N);
 
+  // Timing accessors
+  double GetLinearEulerTime() const { return m_linearEulerTime; }
+  double GetLinearQuaternionTime() const { return m_linearQuaternionTime; }
+  double GetBezierEulerTime() const { return m_bezierEulerTime; }
+  double GetBezierQuaternionTime() const { return m_bezierQuaternionTime; }
+
 protected:
   InterpolationType m_InterpolationType; //Interpolation type (Linear, Bezier)
   AngleRepresentation m_AngleRepresentation; //Angle representation (Euler, Quaternion)
+
+  // Timing measurements (in seconds)
+  double m_linearEulerTime = 0.0;
+  double m_linearQuaternionTime = 0.0;
+  double m_bezierEulerTime = 0.0;
+  double m_bezierQuaternionTime = 0.0;
 
   // conversion routines
   // angles are given in degrees; assume XYZ Euler angle order
@@ -57,7 +72,7 @@ protected:
   void Quaternion2Euler(Quaternion<double> & q, double angles[3]); 
 
   // quaternion interpolation
-  Quaternion<double> Slerp(double t, Quaternion<double> & qStart, Quaternion<double> & qEnd);
+  Quaternion<double> Slerp(double t, const Quaternion<double> & qStart, const Quaternion<double> & qEnd);
   Quaternion<double> Double(Quaternion<double> p, Quaternion<double> q);
 
   // interpolation routines
